@@ -1,46 +1,303 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8" />
-  <title>Fetch /terms Demo</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tren Frontend • NTU HPC</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind config (optional aesthetic tweaks)
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Noto Sans TC", "Helvetica Neue", "Arial", "sans-serif"],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="description" content="AJAX-based pretty frontend for Tren backend (/terms, /terms/<t1>, /query/<q>/studies) with instant results while typing." />
 </head>
-<body>
-  <h1>Fetch https://mil.psy.ntu.edu.tw:5000/terms</h1>
-  <button id="btn">Fetch again</button>
-  <pre id="out">Loading…</pre>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <!-- Header -->
+  <header class="sticky top-0 z-30 backdrop-blur bg-white/70 border-b border-slate-200">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-xl bg-slate-900 text-white grid place-items-center font-bold">T</div>
+        <div>
+          <h1 class="text-lg font-semibold leading-tight">Tren Explorer</h1>
+          <p class="text-xs text-slate-500">NTU HPC • 即時查詢 /terms 與 /studies</p>
+        </div>
+      </div>
+      <a href="https://hpc.psy.ntu.edu.tw:5000" target="_blank" class="text-sm text-slate-600 hover:text-slate-900 underline">後端 API</a>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="max-w-6xl mx-auto px-4 py-8">
+    <!-- Search card -->
+    <section class="grid place-items-center">
+      <div class="w-full md:w-3/4 lg:w-2/3">
+        <div class="relative bg-white shadow-sm ring-1 ring-slate-200 rounded-2xl p-5">
+          <label for="q" class="block text-sm font-medium text-slate-600 mb-2">輸入關鍵字（即時更新，不需按 Enter）</label>
+          <div class="relative">
+            <input id="q" type="text" inputmode="search" placeholder="例如：amygdala, fear, emotion..." class="w-full rounded-xl border-slate-300 focus:border-slate-900 focus:ring-slate-900/20 pr-24" />
+            <div class="absolute inset-y-0 right-0 flex items-center pr-2 gap-2">
+              <button id="clearBtn" class="px-3 py-1.5 text-sm rounded-lg border border-slate-200 hover:bg-slate-100">清除</button>
+            </div>
+          </div>
+
+          <div class="mt-3 flex flex-wrap gap-2 text-xs">
+            <span class="text-slate-500">範例：</span>
+            <button class="ex px-2 py-1 rounded-full bg-slate-100 hover:bg-slate-200" data-val="amygdala">amygdala</button>
+            <button class="ex px-2 py-1 rounded-full bg-slate-100 hover:bg-slate-200" data-val="emotion">emotion</button>
+            <button class="ex px-2 py-1 rounded-full bg-slate-100 hover:bg-slate-200" data-val="fear">fear</button>
+          </div>
+
+          <p class="mt-4 text-xs text-slate-500">說明：
+            輸入空白時會載入 <code>/terms</code>（可用術語清單）。輸入文字後，會同時查詢 <code>/terms/&lt;t1&gt;</code>（關聯術語）與 <code>/query/&lt;q&gt;/studies</code>（相關研究）。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results grid -->
+    <section class="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <!-- Terms Panel -->
+      <div class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 class="font-semibold">關聯術語（/terms 或 /terms/&lt;t1&gt;）</h2>
+          <div id="termsStatus" class="text-xs text-slate-500">—</div>
+        </div>
+        <div id="termsBody" class="p-5">
+          <div class="text-slate-500">尚未載入。</div>
+        </div>
+      </div>
+
+      <!-- Studies Panel -->
+      <div class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 class="font-semibold">研究論文（/query/&lt;q&gt;/studies）</h2>
+          <div id="studiesStatus" class="text-xs text-slate-500">—</div>
+        </div>
+        <div id="studiesBody" class="p-5">
+          <div class="text-slate-500">尚未載入。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer note -->
+    <p class="mt-8 text-xs text-slate-500">若在本機以 <code>file://</code> 方式開啟，瀏覽器可能因 CORS 限制而失敗。建議以本機伺服器或部署至任何靜態網站服務。</p>
+  </main>
 
   <script>
-    async function fetchTerms() {
-      const out = document.getElementById('out');
-      out.textContent = 'Requesting…';
-      try {
-        const resp = await fetch('https://mil.psy.ntu.edu.tw:5000/terms');
-        let info = `HTTP ${resp.status} ${resp.statusText}\n`;
-        const ct = resp.headers.get('content-type') || '';
+    const API_BASE = 'https://hpc.psy.ntu.edu.tw:5000';
 
-        if (!resp.ok) {
-          const text = await resp.text();
-          out.textContent = info + '\n' + text;
-          return;
-        }
+    // DOM refs
+    const input = document.getElementById('q');
+    const clearBtn = document.getElementById('clearBtn');
+    const termsBody = document.getElementById('termsBody');
+    const studiesBody = document.getElementById('studiesBody');
+    const termsStatus = document.getElementById('termsStatus');
+    const studiesStatus = document.getElementById('studiesStatus');
 
-        if (ct.includes('application/json')) {
-          const data = await resp.json();
-          out.textContent = info + '\n' + JSON.stringify(data, null, 2);
-        } else {
-          const text = await resp.text();
-          out.textContent = info + '\n' + text;
-        }
-      } catch (err) {
-        document.getElementById('out').textContent =
-          'Error: ' + (err && err.message ? err.message : String(err)) +
-          '\n\nCommon causes:\n1) CORS not allowed by the server\n2) Opening this file via file:// instead of a local server\n3) Network/server issues';
-      }
+    // Abort in-flight requests when a new keystroke arrives
+    let ctrlTerms = null;
+    let ctrlStudies = null;
+
+    function debounce(fn, ms) {
+      let t = null;
+      return (...args) => {
+        clearTimeout(t);
+        t = setTimeout(() => fn.apply(null, args), ms);
+      };
     }
 
-    document.getElementById('btn').addEventListener('click', fetchTerms);
-    fetchTerms();
+    function spinner(label = '載入中…') {
+      return `
+        <div class="flex items-center gap-2 text-slate-600">
+          <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          </svg>
+          <span>${label}</span>
+        </div>`;
+    }
+
+    function fmt(n, digits = 0) {
+      return typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: digits }) : n;
+    }
+
+    async function fetchJSON(url, signal) {
+      const resp = await fetch(url, { signal });
+      const ct = resp.headers.get('content-type') || '';
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}\n${text}`);
+      }
+      if (ct.includes('application/json')) return resp.json();
+      return resp.text();
+    }
+
+    function renderTerms(data) {
+      // Accepts either { term, related: [...] } or an array/list (all available terms)
+      if (!data) {
+        termsBody.innerHTML = '<div class="text-slate-500">無資料。</div>';
+        termsStatus.textContent = '—';
+        return;
+      }
+
+      // If response looks like { term, related: [...] }
+      if (typeof data === 'object' && !Array.isArray(data) && 'related' in data) {
+        const termTitle = data.term ?? '(unknown)';
+        const rows = (data.related || []).map(r => `
+          <tr class="border-b last:border-b-0">
+            <td class="px-3 py-2 font-medium">${r.term}</td>
+            <td class="px-3 py-2 text-right">${fmt(r.co_count)}</td>
+            <td class="px-3 py-2 text-right">${fmt(r.jaccard, 6)}</td>
+          </tr>`).join('');
+
+        termsBody.innerHTML = `
+          <div class="mb-3 text-sm text-slate-600">關鍵字：<span class="font-semibold">${termTitle}</span>，關聯項目 <span class="font-semibold">${fmt((data.related||[]).length)}</span> 筆</div>
+          <div class="overflow-auto">
+            <table class="min-w-full text-sm">
+              <thead class="bg-slate-50">
+                <tr class="border-b">
+                  <th class="px-3 py-2 text-left font-semibold">Term</th>
+                  <th class="px-3 py-2 text-right font-semibold">Co-count</th>
+                  <th class="px-3 py-2 text-right font-semibold">Jaccard</th>
+                </tr>
+              </thead>
+              <tbody>${rows || '<tr><td class="px-3 py-3 text-slate-500" colspan="3">無關聯資料</td></tr>'}</tbody>
+            </table>
+          </div>`;
+        termsStatus.textContent = `${fmt((data.related||[]).length)} rows`;
+        return;
+      }
+
+      // Otherwise, show as catalog of available terms (array or object map)
+      let list = [];
+      if (Array.isArray(data)) list = data;
+      else if (typeof data === 'object') list = Object.keys(data);
+
+      const items = list.slice(0, 2000).map(t => `
+        <button class="px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 text-xs" data-pick="${t}">${t}</button>`).join(' ');
+
+      termsBody.innerHTML = `
+        <div class="mb-3 text-sm text-slate-600">可用術語清單（僅顯示最多 2000 筆，可點選填入查詢框）：<span class="font-semibold">${fmt(list.length)}</span></div>
+        <div class="flex flex-wrap gap-2">${items || '<span class="text-slate-500">清單為空</span>'}</div>`;
+      termsStatus.textContent = `${fmt(list.length)} terms`;
+
+      // Click-to-fill
+      termsBody.querySelectorAll('[data-pick]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          input.value = btn.dataset.pick;
+          triggerSearch();
+          input.focus();
+        });
+      });
+    }
+
+    function renderStudies(data) {
+      if (!data || !data.results) {
+        studiesBody.innerHTML = '<div class="text-slate-500">無資料。</div>';
+        studiesStatus.textContent = '—';
+        return;
+      }
+      const rows = (data.results || []).map((r, idx) => `
+        <tr class="border-b last:border-b-0 align-top">
+          <td class="px-3 py-2 text-right w-16">${r.year ?? ''}</td>
+          <td class="px-3 py-2">
+            <div class="font-medium">${r.title ?? ''}</div>
+            <div class="text-xs text-slate-500 mt-0.5">Authors: ${r.authors ?? ''}</div>
+            <div class="text-xs text-slate-500">Journal: ${r.journal ?? ''}</div>
+          </td>
+          <td class="px-3 py-2 text-xs text-slate-600 w-40">
+            <div>study_id: <span class="font-mono">${r.study_id ?? ''}</span></div>
+            <div>contrast_id: <span class="font-mono">${r.contrast_id ?? ''}</span></div>
+            <div>id: <span class="font-mono">${r.id ?? ''}</span></div>
+          </td>
+        </tr>`).join('');
+
+      studiesBody.innerHTML = `
+        <div class="mb-3 text-sm text-slate-600">符合條件的研究：<span class="font-semibold">${fmt(data.count)}</span> 篇；目前顯示 <span class="font-semibold">${fmt((data.results||[]).length)}</span> 筆</div>
+        <div class="overflow-auto">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-50">
+              <tr class="border-b">
+                <th class="px-3 py-2 text-right font-semibold">Year</th>
+                <th class="px-3 py-2 text-left font-semibold">Title / Authors / Journal</th>
+                <th class="px-3 py-2 text-left font-semibold">IDs</th>
+              </tr>
+            </thead>
+            <tbody>${rows || '<tr><td class="px-3 py-3 text-slate-500" colspan="3">沒有相關研究</td></tr>'}</tbody>
+          </table>
+        </div>`;
+      studiesStatus.textContent = `${fmt(data.results?.length || 0)} rows`;
+    }
+
+    const triggerSearch = debounce(async function () {
+      const q = input.value.trim();
+
+      // Cancel previous
+      if (ctrlTerms) ctrlTerms.abort();
+      if (ctrlStudies) ctrlStudies.abort();
+      ctrlTerms = new AbortController();
+      ctrlStudies = new AbortController();
+
+      // Terms fetch (either /terms or /terms/<t1>)
+      try {
+        termsBody.innerHTML = spinner(q ? '載入關聯術語…' : '載入可用術語清單…');
+        termsStatus.textContent = 'loading…';
+        const urlTerms = q ? `${API_BASE}/terms/${encodeURIComponent(q)}` : `${API_BASE}/terms`;
+        const termsData = await fetchJSON(urlTerms, ctrlTerms.signal);
+        renderTerms(termsData);
+      } catch (err) {
+        if (err.name === 'AbortError') return; // ignore
+        termsBody.innerHTML = `<div class="text-sm text-red-600 whitespace-pre-wrap">${(err && err.message) || err}</div>`;
+        termsStatus.textContent = 'error';
+      }
+
+      // Studies fetch only when q not empty
+      if (q) {
+        try {
+          studiesBody.innerHTML = spinner('載入相關研究…');
+          studiesStatus.textContent = 'loading…';
+          const urlStudies = `${API_BASE}/query/${encodeURIComponent(q)}/studies`;
+          const studiesData = await fetchJSON(urlStudies, ctrlStudies.signal);
+          renderStudies(studiesData);
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+          studiesBody.innerHTML = `<div class="text-sm text-red-600 whitespace-pre-wrap">${(err && err.message) || err}</div>`;
+          studiesStatus.textContent = 'error';
+        }
+      } else {
+        // When empty input, clear studies panel
+        studiesBody.innerHTML = '<div class="text-slate-500">輸入關鍵字後顯示相關研究。</div>';
+        studiesStatus.textContent = '—';
+      }
+    }, 300);
+
+    // UI events
+    input.addEventListener('input', triggerSearch);
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      input.focus();
+      triggerSearch();
+    });
+    document.querySelectorAll('.ex').forEach(b => b.addEventListener('click', () => {
+      input.value = b.dataset.val || '';
+      input.focus();
+      triggerSearch();
+    }));
+
+    // Initial load: show /terms catalog
+    triggerSearch();
   </script>
 </body>
 </html>
-
