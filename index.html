@@ -46,10 +46,12 @@
         <div class="relative bg-white shadow-sm ring-1 ring-slate-200 rounded-2xl p-5">
           <label for="q" class="block text-sm font-medium text-slate-600 mb-2">輸入關鍵字（即時更新，不需按 Enter）</label>
           <div class="relative">
-            <input id="q" type="text" inputmode="search" placeholder="例如：amygdala, fear, emotion..." class="w-full rounded-xl border-slate-300 focus:border-slate-900 focus:ring-slate-900/20 pr-24" />
+            <input id="q" type="text" inputmode="search" placeholder="例如：amygdala, fear, emotion...（按空白鍵可顯示所有術語）" class="w-full rounded-xl border-slate-300 focus:border-slate-900 focus:ring-slate-900/20 pr-24" />
             <div class="absolute inset-y-0 right-0 flex items-center pr-2 gap-2">
               <button id="clearBtn" class="px-3 py-1.5 text-sm rounded-lg border border-slate-200 hover:bg-slate-100">清除</button>
             </div>
+            <!-- Suggestion dropdown -->
+            <div id="suggestions" class="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden max-h-80 overflow-y-auto hidden z-20"></div>
           </div>
 
           <div class="mt-3 flex flex-wrap gap-2 text-xs">
@@ -60,7 +62,7 @@
           </div>
 
           <p class="mt-4 text-xs text-slate-500">說明：
-            輸入空白時會載入 <code>/terms</code>（可用術語清單）。輸入文字後，會同時查詢 <code>/terms/&lt;t1&gt;</code>（關聯術語）與 <code>/query/&lt;q&gt;/studies</code>（相關研究）。
+            輸入空白（或清空輸入框）時會載入 <code>/terms</code>（可用術語清單）。輸入文字後，會同時查詢 <code>/terms/&lt;t1&gt;</code>（關聯術語）與 <code>/query/&lt;q&gt;/studies</code>（相關研究）。
           </p>
         </div>
       </div>
@@ -105,6 +107,12 @@
     const studiesBody = document.getElementById('studiesBody');
     const termsStatus = document.getElementById('termsStatus');
     const studiesStatus = document.getElementById('studiesStatus');
+    const suggBox = document.getElementById('suggestions');
+
+    // Suggestions cache & state
+    let termsCache = null;   // full list from /terms
+    let suggIndex = -1;      // keyboard index
+    let visibleSugg = [];    // current suggested items
 
     // Abort in-flight requests when a new keystroke arrives
     let ctrlTerms = null;
@@ -144,15 +152,26 @@
       return resp.text();
     }
 
+    // Ensure we have all terms cached for suggestions
+    async function ensureAllTerms() {
+      if (Array.isArray(termsCache)) return termsCache;
+      try {
+        const data = await fetchJSON(`${API_BASE}/terms`, (ctrlTerms||{}).signal);
+        termsCache = Array.isArray(data?.terms) ? data.terms : (Array.isArray(data) ? data : []);
+      } catch (e) {
+        termsCache = [];
+      }
+      return termsCache;
+    }
+
     function renderTerms(data) {
-      // Accepts either { term, related: [...] } or an array/list (all available terms)
+      // Accepts either { term, related: [...] } or an array/list, or { terms: [...] }
       if (!data) {
         termsBody.innerHTML = '<div class="text-slate-500">無資料。</div>';
         termsStatus.textContent = '—';
         return;
       }
 
-      // If response looks like { term, related: [...] }
       if (typeof data === 'object' && !Array.isArray(data) && 'related' in data) {
         const termTitle = data.term ?? '(unknown)';
         const rows = (data.related || []).map(r => `
@@ -180,23 +199,24 @@
         return;
       }
 
-      // Otherwise, show as catalog of available terms (array or object map)
       let list = [];
       if (Array.isArray(data)) list = data;
+      else if (data && Array.isArray(data.terms)) list = data.terms;
       else if (typeof data === 'object') list = Object.keys(data);
 
-      const items = list.slice(0, 2000).map(t => `
+      const items = (list || []).map(t => `
         <button class="px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 text-xs" data-pick="${t}">${t}</button>`).join(' ');
 
       termsBody.innerHTML = `
-        <div class="mb-3 text-sm text-slate-600">可用術語清單（僅顯示最多 2000 筆，可點選填入查詢框）：<span class="font-semibold">${fmt(list.length)}</span></div>
+        <div class="mb-3 text-sm text-slate-600">可用術語清單（全部顯示，可點選填入查詢框）：<span class="font-semibold">${fmt((list || []).length)}</span></div>
         <div class="flex flex-wrap gap-2">${items || '<span class="text-slate-500">清單為空</span>'}</div>`;
-      termsStatus.textContent = `${fmt(list.length)} terms`;
+      termsStatus.textContent = `${fmt((list || []).length)} terms`;
 
       // Click-to-fill
       termsBody.querySelectorAll('[data-pick]').forEach(btn => {
         btn.addEventListener('click', () => {
           input.value = btn.dataset.pick;
+          hideSuggestions();
           triggerSearch();
           input.focus();
         });
@@ -241,8 +261,49 @@
       studiesStatus.textContent = `${fmt(data.results?.length || 0)} rows`;
     }
 
+    function renderSuggestions(list) {
+      visibleSugg = list;
+      if (!list || list.length === 0) {
+        suggBox.classList.add('hidden');
+        suggBox.innerHTML = '';
+        suggIndex = -1;
+        return;
+      }
+      suggIndex = -1;
+      suggBox.innerHTML = list.map(t => `
+        <div class="px-3 py-2 text-sm cursor-pointer hover:bg-slate-50" data-sugg="${t}">${t}</div>
+      `).join('');
+      suggBox.classList.remove('hidden');
+
+      // mousedown to avoid input blur before click
+      suggBox.querySelectorAll('[data-sugg]').forEach(el => {
+        el.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          const val = el.getAttribute('data-sugg');
+          input.value = val;
+          hideSuggestions();
+          triggerSearch();
+        });
+      });
+    }
+
+    function hideSuggestions() {
+      suggBox.classList.add('hidden');
+      suggBox.innerHTML = '';
+      suggIndex = -1;
+      visibleSugg = [];
+    }
+
+    function highlightSuggestion(newIndex) {
+      const items = Array.from(suggBox.children);
+      items.forEach((el, idx) => {
+        el.classList.toggle('bg-slate-100', idx === newIndex);
+      });
+    }
+
     const triggerSearch = debounce(async function () {
-      const q = input.value.trim();
+      const raw = input.value;
+      const q = raw.trim();
 
       // Cancel previous
       if (ctrlTerms) ctrlTerms.abort();
@@ -250,11 +311,24 @@
       ctrlTerms = new AbortController();
       ctrlStudies = new AbortController();
 
-      // Terms fetch (either /terms or /terms/<t1>)
+      // Preload suggestions (non-blocking)
+      ensureAllTerms();
+
+      // Suggestions dropdown
+      if (q.length >= 1) {
+        const lc = q.toLowerCase();
+        const list = (termsCache || []).filter(t => (t||'').toLowerCase().startsWith(lc));
+        renderSuggestions(list);
+      } else {
+        hideSuggestions();
+      }
+
+      // Terms fetch
       try {
-        termsBody.innerHTML = spinner(q ? '載入關聯術語…' : '載入可用術語清單…');
+        const isBlank = q.length === 0; // 空字串或只有空白
+        termsBody.innerHTML = spinner(isBlank ? '載入可用術語清單…' : '載入關聯術語…');
         termsStatus.textContent = 'loading…';
-        const urlTerms = q ? `${API_BASE}/terms/${encodeURIComponent(q)}` : `${API_BASE}/terms`;
+        const urlTerms = isBlank ? `${API_BASE}/terms` : `${API_BASE}/terms/${encodeURIComponent(q)}`;
         const termsData = await fetchJSON(urlTerms, ctrlTerms.signal);
         renderTerms(termsData);
       } catch (err) {
@@ -277,7 +351,6 @@
           studiesStatus.textContent = 'error';
         }
       } else {
-        // When empty input, clear studies panel
         studiesBody.innerHTML = '<div class="text-slate-500">輸入關鍵字後顯示相關研究。</div>';
         studiesStatus.textContent = '—';
       }
@@ -285,19 +358,67 @@
 
     // UI events
     input.addEventListener('input', triggerSearch);
+
+    // Space key shows all terms when input is whitespace-only
+    input.addEventListener('keydown', (e) => {
+      if (e.key === ' ') {
+        const raw = input.value + ' ';
+        if (/^\s*$/.test(raw)) {
+          e.preventDefault();
+          input.value = ' ';
+          hideSuggestions();
+          triggerSearch();
+          return;
+        }
+      }
+      // keyboard navigation for suggestions
+      if (!suggBox.classList.contains('hidden')) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          suggIndex = Math.min(suggIndex + 1, visibleSugg.length - 1);
+          highlightSuggestion(suggIndex);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          suggIndex = Math.max(suggIndex - 1, 0);
+          highlightSuggestion(suggIndex);
+        } else if (e.key === 'Enter') {
+          if (suggIndex >= 0 && suggIndex < visibleSugg.length) {
+            e.preventDefault();
+            input.value = visibleSugg[suggIndex];
+            hideSuggestions();
+            triggerSearch();
+          }
+        } else if (e.key === 'Escape') {
+          hideSuggestions();
+        }
+      }
+    });
+
+    // Click outside closes suggestions
+    document.addEventListener('click', (e) => {
+      if (!suggBox.contains(e.target) && e.target !== input) {
+        hideSuggestions();
+      }
+    });
+
     clearBtn.addEventListener('click', () => {
       input.value = '';
       input.focus();
+      hideSuggestions();
       triggerSearch();
     });
+
     document.querySelectorAll('.ex').forEach(b => b.addEventListener('click', () => {
       input.value = b.dataset.val || '';
       input.focus();
+      hideSuggestions();
       triggerSearch();
     }));
 
-    // Initial load: show /terms catalog
-    triggerSearch();
+    // Initial load
+    ensureAllTerms().finally(() => {
+      triggerSearch();
+    });
   </script>
 </body>
 </html>
